@@ -1,0 +1,131 @@
+{
+  "test_scenarios": [
+    {
+      "id": "scenario_001",
+      "name": "Clear Tooling Failure",
+      "operator_input": "Tooling chatter on step 2, tool insert T3 chipped, surface roughness high",
+      "context": {
+        "work_order_ref": "WH/MO/00002",
+        "product_name": "FURN_9666 Table",
+        "workcenter_name": "Assembly Line 1",
+        "report_date": "2026-09-28T10:30:00Z"
+      },
+      "expected_classification": {
+        "failure_mode": "Tooling Wear",
+        "iso_code": "TW-001",
+        "symptom": "Vibration",
+        "component": "Tool Insert T3",
+        "location": "Step 2",
+        "severity": "High",
+        "confidence_min": 0.85
+      },
+      "expected_action": "create_maintenance_ticket",
+      "baseline_metrics": {
+        "manual_classification_time_minutes": 4.5,
+        "triage_latency_hours": 68,
+        "maintenance_ticket_delay_hours": 72
+      }
+    },
+    {
+      "id": "scenario_002",
+      "name": "Ambiguous Vibration Report",
+      "operator_input": "Station 02: Spindle vibrational chatter on step 2",
+      "context": {
+        "work_order_ref": "WH/MO/00001",
+        "product_name": "FURN_8522 Table Top",
+        "workcenter_name": "Assembly Line 1",
+        "report_date": "2026-09-28T11:15:00Z"
+      },
+      "expected_classification": {
+        "failure_mode": "Mechanical Failure",
+        "symptom": "Vibration",
+        "location": "Step 2",
+        "severity": "Medium",
+        "confidence_max": 0.7
+      },
+      "expected_action": "request_clarification",
+      "baseline_metrics": {
+        "manual_classification_time_minutes": 6.0,
+        "triage_latency_hours": 72,
+        "clarification_rounds": 2
+      }
+    },
+    {
+      "id": "scenario_003",
+      "name": "Process Blockage (Low Priority)",
+      "operator_input": "Blocked by upstream line occupancy, waiting for WIP from Station 01",
+      "context": {
+        "work_order_ref": "WH/MO/00003",
+        "product_name": "FURN_7800 Desk Combo",
+        "workcenter_name": "Assembly Line 1",
+        "report_date": "2026-09-28T14:00:00Z"
+      },
+      "expected_classification": {
+        "failure_mode": "Process Deviation",
+        "iso_code": "PD-005",
+        "symptom": "Blockage",
+        "severity": "Low",
+        "confidence_min": 0.8
+      },
+      "expected_action": "no_maintenance_ticket",
+      "baseline_metrics": {
+        "manual_classification_time_minutes": 2.0,
+        "triage_latency_hours": 48,
+        "scheduler_notification_delay_hours": 24
+      }
+    },
+    {
+      "id": "scenario_004",
+      "name": "Surface Defect with Component Detail",
+      "operator_input": "Surface scratches on part, visible scoring marks, feed motor sounds rough",
+      "context": {
+        "work_order_ref": "WH/MO/00004",
+        "product_name": "FURN_9666 Table",
+        "workcenter_name": "Finishing Line",
+        "report_date": "2026-09-28T09:45:00Z"
+      },
+      "expected_classification": {
+        "failure_mode": "Mechanical Failure",
+        "symptom": "Surface Defect",
+        "component": "Feed Motor",
+        "severity": "High",
+        "confidence_min": 0.75
+      },
+      "expected_action": "create_maintenance_ticket",
+      "baseline_metrics": {
+        "manual_classification_time_minutes": 5.5,
+        "triage_latency_hours": 70
+      }
+    },
+    {
+      "id": "scenario_005",
+      "name": "Edge Case - Vague Description",
+      "operator_input": "machine making noise",
+      "context": {
+        "work_order_ref": "WH/MO/00005",
+        "product_name": "FURN_8522 Table Top",
+        "workcenter_name": "Assembly Line 2",
+        "report_date": "2026-09-28T13:20:00Z"
+      },
+      "expected_classification": {
+        "symptom": "Noise",
+        "severity": "Medium",
+        "confidence_max": 0.5
+      },
+      "expected_action": "request_clarification",
+      "baseline_metrics": {
+        "manual_classification_time_minutes": 8.0,
+        "triage_latency_hours": 96,
+        "clarification_rounds": 3
+      }
+    }
+  ],
+  "baseline_summary": {
+    "average_triage_latency_hours": 68,
+    "average_classification_time_minutes": 5.2,
+    "average_maintenance_ticket_delay_hours": 72,
+    "scrap_rate_percentage": 4.6,
+    "monthly_cost_estimate_usd": 18500,
+    "queue_blockage_hours_per_incident": 5.0
+  }
+}
