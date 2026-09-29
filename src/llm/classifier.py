@@ -21,13 +21,13 @@ logger = logging.getLogger(__name__)
 class DefectClassifier:
     """Classifies operator defect reports using LLM with function calling."""
     
-    def __init__(self, api_key: str, model: str = "gpt-4-0125-preview"):
+    def __init__(self, api_key: str, model: str = "gpt-4-turbo"):
         """
         Initialize classifier with OpenAI client.
         
         Args:
             api_key: OpenAI API key
-            model: Model to use (default: gpt-4-0125-preview for function calling)
+            model: Model to use (default: gpt-4-turbo for function calling)
         """
         self.client = OpenAI(api_key=api_key)
         self.model = model

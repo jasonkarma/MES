@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class ActionGenerator:
     """Generates diagnostic checklists and maintenance recommendations."""
     
-    def __init__(self, api_key: str, model: str = "gpt-4-0125-preview"):
+    def __init__(self, api_key: str, model: str = "gpt-4-turbo"):
         """
         Initialize action generator with OpenAI client.
         
