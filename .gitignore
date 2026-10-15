@@ -15,12 +15,12 @@ logs/*.jsonl
 logs/*.log
 *.log
 
-# Watch-mode runtime state (checkpoint + lock). Local to each machine; the
-# cursor is meaningless on another host, so it must never be committed.
-logs/watch_state.json
-logs/watch_state.json.lock
-logs/watch_state.json.corrupt.*
+# Watch-mode runtime state (checkpoint + lock + quarantined/backup copies).
+# Local to each machine: a cursor is meaningless on another host, and a stale
+# checkpoint must never be inherited by a fresh clone.
+logs/watch_state.json*
 logs/triage_watch_failures.jsonl
+logs/watch.log
 
 # IDE
 .vscode/

@@ -137,6 +137,36 @@ Option B — keep it running and post as a different user
   Log into Odoo as  demo / demo  (Marc Demo), then follow Part 1.
 ```
 
+### Recovering notes that were already skipped
+
+A watcher that ran with the default and skipped your notes has **already advanced its
+cursor past them**, so simply adding the flag will not go back. Two things must happen:
+the checkpoint's **content-hash ring** (which would skip your text as `duplicate-content`)
+and the **cursor** (which would never re-fetch the note) both have to be stepped back.
+
+Exact recipe — stop, set aside the checkpoint, restart from a `--since-id` that predates
+the skipped notes:
+
+```bash
+# 1. stop the old watcher (SIGTERM: it finishes the in-flight note and flushes state)
+kill -TERM $(pgrep -f 'triage.py --watch' | head -1) ; sleep 2
+
+# 2. set the old checkpoint aside, and drop its lock
+mv logs/watch_state.json logs/watch_state.json.bak
+rm -f logs/watch_state.json.lock
+
+# 3. restart with the flag, replaying everything from the first skipped note
+nohup python triage.py --watch --allow-self-authored --interval 5 \
+      --since-id 244 --state-file logs/watch_state.json > logs/watch.log 2>&1 &
+```
+
+`--since-id N` sets the cursor to `N`, so every note with `id > N` is re-examined. Notes
+that genuinely were triaged are not re-triaged: their text is not in the fresh hash ring,
+but their **reply** is rejected by the AI-marker guard, and any note whose conversation the
+operator has moved past will simply be visibly answered once. Expect the log to show a run
+of `Triaged …` followed by `Skipping … ai-marker` for each reply — that pairing is the
+proof the self-loop guard is working.
+
 Then, in order:
 
 1. Open **WH/MO/00001** → Chatter → **Log note**.
@@ -188,6 +218,33 @@ retain all authority.
 | Reply looks generic / code `UNCL-999` | Your note lacked station, component or symptom | Add the who/what/how |
 | Answer appeared twice | Should not happen — check the two notes are not identical | Report it; the hash guard is designed to prevent this |
 | Watcher gone after a terminal restart | It is a foreground process | Re-run `python triage.py --watch` (it resumes from the checkpoint) |
+
+---
+
+## Known limitations (read this before you write it up)
+
+These are real and worth stating honestly rather than letting a reviewer find them:
+
+1. **The ISO code is model-generated, not validated.** There is no fixed taxonomy check in
+   `triage.py`, so the same symptom can come back with a different code on a re-run —
+   observed live: the hydraulic-leak note returned `MECH-003` on one run and `MECH-001` on
+   another, and two unrelated symptoms both landed on `MECH-001`. The prefix (`MECH`, `TW`,
+   `PROC`, `MAT`, `ELEC`) is stable and meaningful; the `-NNN` suffix is not a real
+   catalogue. If you need determinism, the code must be validated against a taxonomy list
+   (or pinned to a fixed enum) before anything downstream relies on it.
+2. **Severity is stable and is the useful signal.** The `LOW/MEDIUM/CRITICAL` decision
+   matched expectation on every live test, which is why the SOP's "stop / continue" rule
+   is keyed on severity, not on the code.
+3. **Photos are ignored.** An attachment-only note strips to empty text and is skipped as
+   `empty-note`. There is no vision step.
+4. **Only `mrp.production` is watched.** Defects noted on other models (work orders,
+   quality alerts) are out of scope.
+5. **Replies are internal notes.** They are visible in the Chatter but do not email
+   followers, do not create a maintenance ticket, and do not change the MO state.
+6. **Multi-instance is lock-protected, not distributed.** `fcntl.flock` is POSIX-only and
+   host-local; two watchers on two hosts pointed at the same Odoo would both act. The
+   content-hash guard makes that mostly harmless (the second one's LLM call is wasted but
+   it will post a second reply only if its checkpoint has not seen the text).
 
 ---
 
