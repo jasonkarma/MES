@@ -2,6 +2,12 @@
 # triage.py (standalone XML-RPC -> LLM -> Chatter bridge) needs only:
 #   - python-dotenv : loads ODOO_* / OPENAI_API_KEY from .env
 #   - openai        : the official OpenAI SDK
+#
+# Watch mode (python triage.py --watch) adds NO new dependencies: HTML
+# stripping (html.parser), the checkpoint file (json/os.replace), retry delays
+# (time/random) and the single-instance lock (fcntl) are all stdlib.
+# NOTE: fcntl is POSIX-only. On Windows the lock degrades to a logged no-op;
+# the durable dedupe guards in the checkpoint still prevent double triage.
 python-dotenv==1.0.0
 requests==2.31.0
 # 1.54.0 passes the removed `proxies` argument to httpx 0.28 and crashes.

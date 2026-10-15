@@ -294,6 +294,62 @@ if classification['requires_maintenance']:
 
 ---
 
+## 5b. Event Discovery: `triage.py --watch` (Continuous Chatter Triage)
+
+The `src/` orchestrator is pull-a-record-by-id; `triage.py --watch` closes the loop by
+**discovering** operator defects itself. It is an external XML-RPC poller — no Odoo module,
+no Odoo source change, no new Python dependency.
+
+### Discovery path
+
+```
+operator note lands in mrp.production Chatter
+        │  (a normal mail.message row: model, res_id, body(HTML), author_id, message_type)
+        ▼
+poll: mail.message.search_read(
+        domain = [ model = 'mrp.production',
+                   id    > checkpoint.last_message_id,      ← monotonic cursor
+                   message_type in ('comment','email') ]     ← excludes Odoo tracking noise
+        order  = 'id asc', limit = batch_size)
+        ▼
+guard chain (all before an LLM call)
+  self-authored?  ai-marker?  duplicate-id?  empty-note?  duplicate-content?
+        ▼
+triage_note()  →  render_html()  →  mail.message.create(parent_id = source note)
+        ▼
+checkpoint.save()   (atomic: tmp → fsync → os.replace)
+```
+
+### Why these specific choices
+
+| Decision | Rationale |
+|---|---|
+| Cursor on the numeric `mail.message.id` | IDs are globally monotonic, so one integer is a complete, crash-safe cursor. No timestamps → immune to clock skew/DST. |
+| `message_type` filter, **not** `subtype_id` | Operator notes are `comment`; Odoo's workflow messages are `notification`. Subtype cannot discriminate here because our own reply uses `mail.mt_note` — the same subtype a human internal note uses. |
+| Three redundant self-output guards | The reply *is* a `mail.message` on the same record and will be re-fetched. Guards: (1) author partner id, (2) plain-text marker `[ai-triage:v1]` + `🤖 AI Triage` heading, (3) the checkpoint. (1) and (2) are independent so a changed AI user or a hand-copied verdict is still caught. |
+| Reply marker is **plain text** | Verified live: Odoo sanitises `mail.message.body` and strips custom attributes, so a `data-*` marker does not survive the DB round-trip. |
+| Cursor is *not* advanced to the reply's id | Replies interleave with operator notes in the global id sequence; skipping to the reply could permanently skip a note. Re-fetching and rejecting the reply costs no LLM call. |
+| Checkpoint flushed per message, not per batch | `kill -9` loses at most the in-flight note. |
+| First run adopts the *tip* | An absent checkpoint must never mean "send the whole Chatter history to the LLM". |
+| Poison-message policy `skip` by default | The queue is a Chatter log, not an ordered ledger; one un-processable note must not block head-of-line forever. Failures go to a dead-letter JSONL audit trail. |
+
+### Failure model
+
+- **Retried** (`retry_call`, ≤3 attempts, exponential backoff + full jitter): XML-RPC
+  `ProtocolError`, socket/`OSError`, and OpenAI `RateLimitError`/`APIConnectionError`/
+  `APITimeoutError`/`InternalServerError`.
+- **Not retried** (deterministic): XML-RPC `Fault` (ACL, validation), unparseable model
+  output, missing MO. These go straight to the dead-letter file.
+- **Poll level**: consecutive poll failures back off up to 300 s; the loop never dies on a
+  single bad note. SIGINT/SIGTERM finishes the in-flight message, flushes state, exits 0.
+- **Single instance**: `fcntl.flock` on `<state-file>.lock` prevents double-posting.
+
+Full design, trade-off analysis and the live-Odoo verification log:
+[`plans/watch-mode-design.md`](../plans/watch-mode-design.md). Offline test suite (121 checks,
+no Odoo/API key/network): [`tests/test_watch.py`](../tests/test_watch.py).
+
+---
+
 ## 6. Tools & Technologies
 
 | Component | Technology | Purpose |
@@ -357,8 +413,11 @@ if classification['requires_maintenance']:
 
 - **Vector Database:** Replace keyword matching with ChromaDB/Pinecone
 - **Fine-tuning:** Train GPT-4 on company-specific defect history
-- **Multi-modal:** Add image analysis (defect photos from operators)
-- **Real-time:** WebSocket integration for live dashboard updates
+- **Multi-modal:** Add image analysis (defect photos from operators) — note that
+  `--watch` currently *skips* attachment-only notes rather than guessing from filenames
+- **Real-time:** Replace polling with Odoo `base_automation`/webhook triggers (delivers the
+  same behaviour with lower latency than `--watch --interval`)
+- **Dead-letter replay:** Re-submit `logs/triage_watch_failures.jsonl` entries after a fix
 - **Feedback Loop:** Capture expert corrections to improve prompts
 
 ---

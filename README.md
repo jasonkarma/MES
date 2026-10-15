@@ -145,9 +145,12 @@ MES/
 │   │   └── action_generator.py# Diagnostic checklist generator
 │   └── rag/
 │       └── simple_rag.py      # Knowledge base retrieval
+├── triage.py                  # Standalone XML-RPC -> LLM -> Chatter bridge
+│                              #   one-shot (default) or continuous (--watch)
 ├── tests/
 │   ├── test_connection.py     # Odoo connection test
-│   └── test_scenarios.py      # End-to-end scenario tests
+│   ├── test_scenarios.py      # End-to-end scenario tests
+│   └── test_watch.py          # Offline tests for --watch (no Odoo, no API key)
 ├── data/
 │   ├── seed_defects.json      # Test scenarios with baselines
 │   └── knowledge_base/        # SOPs, manuals (would be populated)
@@ -158,7 +161,8 @@ MES/
 │   ├── project-summary.md
 │   ├── genai-integration-architecture.md
 │   ├── implementation-checklist.md
-│   └── quick-start-guide.md
+│   ├── quick-start-guide.md
+│   └── watch-mode-design.md   # --watch design, trade-offs, live verification log
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
@@ -316,6 +320,17 @@ Each test:
 - Measures processing time
 - Cleans up test data
 
+### Watch Mode Tests (offline)
+
+```bash
+python tests/test_watch.py
+```
+
+121 checks covering HTML stripping, duplicate/AI-marker guards, the durable checkpoint,
+retry vs. dead-letter behaviour and exactly-once triage across a restart. **No Odoo
+instance, no OpenAI key and no network access required** — the XML-RPC bridge and the LLM
+client are replaced with fakes.
+
 ---
 
 ## 📝 Prompt Engineering & Iteration Log
@@ -382,7 +397,8 @@ alerts = models.execute_kw(db, uid, password,
 | Odoo Model | Purpose | Operations |
 |------------|---------|------------|
 | `quality.alert` | Defect reports | Read description, write classification |
-| `mrp.production` | Manufacturing orders | Read for context |
+| `mrp.production` | Manufacturing orders | Read for context, read Chatter, post replies |
+| `mail.message` | Chatter notes (`--watch` mode) | Poll new notes by monotonic `id`, read body/author |
 | `maintenance.request` | Maintenance tickets | Create for high-severity defects |
 
 ### Custom Fields (Optional)
@@ -423,6 +439,98 @@ print(f"Actions: {result['actions']}")
 # Poll every 30 seconds for new alerts
 orchestrator.poll_and_process(interval_seconds=30)
 ```
+
+---
+
+## 👀 Continuous Watch Mode (`triage.py --watch`)
+
+`triage.py` also runs as a **long-lived watcher**: instead of you supplying a note, it
+discovers real operator notes in the Chatter of every Manufacturing Order, triages them
+and replies **in the same thread** — once per note, forever. No Odoo module, no Odoo
+source change, no new Python dependency.
+
+```
+operator types a note in the MO Chatter  ──►  watcher polls mail.message  ──►  AI reply in-thread
+```
+
+It solves the six hard parts of "just poll in a loop":
+
+| Requirement | How it is handled |
+|---|---|
+| **Poll new `mail.message` records** | `search_read` with `domain=[('model','=','mrp.production'), ('id','>',cursor), ('message_type','in',('comment','email'))]`, `order='id asc'`. `message_type` separates human notes from Odoo's tracking/state-change noise. |
+| **Strip their HTML** | stdlib `html.parser` subclass: block tags → newlines, entities decoded, `<script>/<style>` dropped, Odoo attachment wrappers dropped, capped at 1500 chars. |
+| **Prevent duplicate processing** | A persisted checkpoint holds the last processed `id` plus bounded rings of processed ids and `sha1(res_id + note)` content hashes — so a re-posted identical note is skipped and a restart never re-triages. |
+| **Ignore AI-generated messages** | Three guards: author partner id, an HTML/text marker (`[ai-triage:v1]` + the `🤖 AI Triage` heading), and the cursor. All run **before** any LLM call. |
+| **Handle failures** | Transient transport/LLM errors retry with jittered exponential backoff; deterministic failures are dead-lettered to `logs/triage_watch_failures.jsonl`; the loop keeps going (`--on-error skip`) or stops for debugging (`--on-error halt`). |
+| **Preserve a checkpoint** | `logs/watch_state.json`, written atomically (tmp → `fsync` → `os.replace`) after **every** handled message, so `kill -9` loses at most the in-flight note. A corrupt checkpoint is quarantined and the watcher restarts from the current tip rather than replaying history. |
+
+### Usage
+
+```bash
+# Watch forever, polling every 10 seconds (the default)
+python triage.py --watch
+
+# Bounded demo run, faster polling
+python triage.py --watch --interval 5 --max-iterations 12
+
+# Replay the last 10 chatter messages, then continue live
+python triage.py --watch --backfill 10
+
+# Replay everything from a specific mail.message id
+python triage.py --watch --since-id 4800
+
+# See what would happen without writing anything (nothing is consumed)
+python triage.py --watch --dry-run
+
+# Stop on the first unprocessable note so you can debug it
+python triage.py --watch --on-error halt -v
+```
+
+**Startup policy:** the *first* run with no checkpoint adopts the current chatter tip as its
+cursor — it triages only what operators post from then on. This is deliberate: an empty
+state file must never mean "send the entire chatter history to the LLM".
+
+**Stopping:** `Ctrl-C` (SIGINT) or SIGTERM finishes the in-flight note, flushes the
+checkpoint and exits 0.
+
+### Flags
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--watch` | off | Run as the polling watcher instead of one-shot |
+| `--interval SECONDS` | `10` | Delay between polls (bursts are drained at 1/5 of this) |
+| `--batch-size N` | `20` | Max notes handled per poll |
+| `--since-id N` | – | Start the cursor at this `mail.message` id |
+| `--backfill N` | – | Start N notes before the current tip |
+| `--state-file PATH` | `logs/watch_state.json` | Checkpoint (use different paths for independent watchers) |
+| `--failures-file PATH` | `logs/triage_watch_failures.jsonl` | Dead-letter log |
+| `--max-iterations N` | – | Stop after N polls (testing/demos) |
+| `--on-error {skip,halt}` | `skip` | Poison-message policy |
+| `--message-types A,B` | `comment,email` | Which `mail.message.message_type` values count as operator input |
+| `--dry-run` | off | Log the reply instead of posting it; inspected notes are **not** consumed, so a later real run triages them |
+
+Equivalent `.env` keys: `WATCH_INTERVAL`, `WATCH_BATCH_SIZE`, `WATCH_STATE_FILE`,
+`WATCH_FAILURES_FILE`, `WATCH_ON_ERROR`, `WATCH_MESSAGE_TYPES` (CLI always wins).
+
+### Safeguards
+
+- **Single instance:** `logs/watch_state.json.lock` is held with `fcntl.flock`, so a second
+  watcher exits with a clear message instead of double-posting. (POSIX only; on Windows the
+  lock degrades to a logged no-op — the checkpoint guards still hold.)
+- **Poison messages:** one un-processable note cannot block the queue forever. It is
+  dead-lettered with the error, the message id, the MO id and a note excerpt, and the cursor
+  moves past it.
+- **Cost control:** self-authored/AI-marker/empty/duplicate notes are rejected without an LLM
+  call, and the batch size caps the work per poll.
+
+### Testing
+
+```bash
+python tests/test_watch.py      # 121 offline checks: no Odoo, no API key, no network
+```
+
+Full design, trade-offs and the live-Odoo verification log:
+[`plans/watch-mode-design.md`](plans/watch-mode-design.md).
 
 ---
 
@@ -487,6 +595,13 @@ orchestrator.poll_and_process(interval_seconds=30)
    - Tracks prompt version, model, tokens, processing time
    - Enables analysis and optimization
 
+8. **✓ Unattended continuous operation** (`triage.py --watch`)
+   - Discovers real operator notes in the Chatter — no manual injection, no scheduled batch
+   - Exactly-once triage per note, across crashes and restarts (durable checkpoint)
+   - Self-output suppression (author + marker guards), so the AI never triages itself
+   - Poison-message isolation with a dead-letter audit trail
+   - Zero new dependencies; verified live against Odoo 17
+
 ---
 
 ## 📖 Documentation
@@ -495,6 +610,7 @@ orchestrator.poll_and_process(interval_seconds=30)
 - **[Architecture Details](plans/genai-integration-architecture.md)** - System design deep-dive
 - **[Implementation Checklist](plans/implementation-checklist.md)** - Phase-by-phase tasks
 - **[Quick Start Guide](plans/quick-start-guide.md)** - 30-minute setup
+- **[Watch Mode Design](plans/watch-mode-design.md)** - `--watch` design, trade-offs, live verification log
 
 ---
 
@@ -514,6 +630,28 @@ orchestrator.poll_and_process(interval_seconds=30)
 - Check key has not expired
 - Ensure billing is active on OpenAI account
 
+### Watch mode: "Another triage.py --watch is already running"
+- The single-instance lock (`logs/watch_state.json.lock`) is held by another process
+- Find it: `lsof logs/watch_state.json.lock` (or `ps aux | grep 'triage.py --watch'`)
+- Or run a genuinely independent watcher with its own `--state-file PATH`
+
+### Watch mode: an operator's note was never triaged
+1. Check the skip reasons in the watcher log (`-v` for detail). Common ones:
+   - `self-authored` — the note was posted by the same Odoo user the watcher authenticates
+     as. Author the note as a different user/partner.
+   - `duplicate-content` — the exact same text was already triaged on that MO.
+   - `empty-note` — the note was attachment-only, blank, or shorter than 4 characters.
+   - `ai-marker` — the body looks like an AI verdict.
+2. Check `logs/triage_watch_failures.jsonl` for the note's `message_id` and the error.
+3. Check the cursor: `cat logs/watch_state.json` — `last_message_id` must be **below** the
+   note's id, or the note predates the checkpoint.
+
+### Watch mode: re-triage the backlog / start over
+- Replay the last N notes: `python triage.py --watch --backfill N`
+- Replay from an id: `python triage.py --watch --since-id 4800`
+- Full reset: stop the watcher, delete `logs/watch_state.json`, start again. The next run
+  adopts the *current* tip (it will not replay history), and the dedupe rings are gone.
+
 ### "ModuleNotFoundError"
 - Activate virtual environment: `source venv/bin/activate`
 - Reinstall dependencies: `pip install -r requirements.txt`
@@ -523,7 +661,10 @@ orchestrator.poll_and_process(interval_seconds=30)
 ## 🔮 Future Enhancements
 
 1. **Production RAG**: Replace keyword search with ChromaDB + OpenAI embeddings
-2. **Webhooks**: Real-time triggers instead of polling
+2. **Webhooks**: Real-time triggers instead of polling (`--watch` is the polling bridge;
+   a `base_automation`/webhook trigger is the natural upgrade)
+3. **Dead-letter replay**: a `--retry-failed` command that re-submits
+   `triage_watch_failures.jsonl` entries once the underlying cause is fixed
 3. **Custom Odoo Fields**: Add x_ai_* fields for better data structure
 4. **Multi-language**: Support operator input in multiple languages
 5. **Vision**: Integrate defect photo analysis
@@ -556,6 +697,8 @@ This is a student assignment project for educational purposes.
 - ✅ Robust edge case handling (4 types)
 - ✅ Structured prompt iteration log
 - ✅ Complete documentation and setup instructions
+- ✅ Unattended continuous triage (`--watch`), exactly-once and crash-safe
+- ✅ 121 offline watch-mode tests, no Odoo/API key/network needed
 
 **Expected Grade Impact:**
 - Reduces triage latency by 99.99%
@@ -566,5 +709,5 @@ This is a student assignment project for educational purposes.
 
 ---
 
-*README v1.0 - Created: 2026-09-28*  
-*Last Updated: 2026-09-28*
+*README v1.0 - Created: 2026-09-28*
+*Last Updated: 2026-10-15 (added `triage.py --watch` continuous-triage mode)*

@@ -15,6 +15,13 @@ logs/*.jsonl
 logs/*.log
 *.log
 
+# Watch-mode runtime state (checkpoint + lock). Local to each machine; the
+# cursor is meaningless on another host, so it must never be committed.
+logs/watch_state.json
+logs/watch_state.json.lock
+logs/watch_state.json.corrupt.*
+logs/triage_watch_failures.jsonl
+
 # IDE
 .vscode/
 .idea/
