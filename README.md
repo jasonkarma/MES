@@ -619,6 +619,7 @@ Full design, trade-offs and the live-Odoo verification log:
 - **[Implementation Checklist](plans/implementation-checklist.md)** - Phase-by-phase tasks
 - **[Quick Start Guide](plans/quick-start-guide.md)** - 30-minute setup
 - **[Watch Mode Design](plans/watch-mode-design.md)** - `--watch` design, trade-offs, live verification log
+- **[Watch Mode SOP](docs/WATCH_MODE_SOP.md)** - operator runbook: what to type in Odoo, what the AI does, troubleshooting
 
 ---
 
