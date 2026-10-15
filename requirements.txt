@@ -1,4 +1,9 @@
 # Core dependencies (Python 3.14 compatible)
+# triage.py (standalone XML-RPC -> LLM -> Chatter bridge) needs only:
+#   - python-dotenv : loads ODOO_* / OPENAI_API_KEY from .env
+#   - openai        : the official OpenAI SDK
 python-dotenv==1.0.0
 requests==2.31.0
-openai==1.54.0
+# 1.54.0 passes the removed `proxies` argument to httpx 0.28 and crashes.
+# 3.19.2 supports current httpx and keeps the same OpenAI()/chat API used here.
+openai==3.19.2

@@ -5,7 +5,7 @@ ODOO_USERNAME=admin
 ODOO_PASSWORD=your_password_here
 
 # OpenAI Configuration
-OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxxx
+OPENAI_API_KEY=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
 
 # Optional: Logging
 LOG_LEVEL=INFO
