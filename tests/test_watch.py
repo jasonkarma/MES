@@ -295,6 +295,22 @@ def test_skip_reasons() -> None:
         ai_body = T.render_html({"iso_code": "TW-1", "severity": "LOW",
                                  "action_steps": ["a", "b", "c"]},
                                 "x", "m", 5)
+
+        # --allow-self-authored: the single-admin setup, where the human posting
+        # a note IS the account the bridge logs in as. AI replies must STILL be
+        # ignored, or the watcher would triage its own output forever.
+        permissive = make_watcher(FakeOdoo(), FakeLLM(), Path(d),
+                                  skip_self_authored=False)
+        permissive.bootstrap()
+        eq("--allow-self-authored triages same-author notes",
+           permissive._skip_reason(msg(110, f"<p>{note}</p>", author=PARTNER_ID),
+                                   note, fp), None)
+        eq("--allow-self-authored still ignores AI replies",
+           permissive._skip_reason(msg(111, ai_body), T.html_to_text(ai_body), fp),
+           "ai-marker")
+        eq("--allow-self-authored does not loop on the reply id",
+           permissive._skip_reason(msg(112, ai_body, author=PARTNER_ID),
+                                   T.html_to_text(ai_body), fp), "ai-marker")
         eq("AI marker in the body -> skipped",
            watcher._skip_reason(msg(102, ai_body), T.html_to_text(ai_body), fp),
            "ai-marker")
@@ -705,10 +721,18 @@ def test_cli_parsing() -> None:
     eq("None --message-types falls back to the default",
        T._parse_message_types(None), T.DEFAULT_MESSAGE_TYPES)
 
+    eq("--allow-self-authored is unset by default",
+       parser.parse_args([]).allow_self_authored, None)
+    eq("--allow-self-authored sets the flag",
+       parser.parse_args(["--allow-self-authored"]).allow_self_authored, True)
+    eq("--skip-self-authored clears the flag",
+       parser.parse_args(["--skip-self-authored"]).allow_self_authored, False)
+
     check("load_settings exposes the watch keys",
           all(k in T.load_settings() for k in
               ("watch_interval", "watch_batch_size", "watch_state_file",
-               "watch_failures_file", "watch_on_error", "watch_message_types")))
+               "watch_failures_file", "watch_on_error", "watch_message_types",
+               "watch_skip_self_authored")))
 
 
 # --------------------------------------------------------------------------- #

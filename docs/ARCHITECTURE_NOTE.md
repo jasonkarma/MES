@@ -345,7 +345,7 @@ checkpoint.save()   (atomic: tmp → fsync → os.replace)
 - **Single instance**: `fcntl.flock` on `<state-file>.lock` prevents double-posting.
 
 Full design, trade-off analysis and the live-Odoo verification log:
-[`plans/watch-mode-design.md`](../plans/watch-mode-design.md). Offline test suite (121 checks,
+[`plans/watch-mode-design.md`](../plans/watch-mode-design.md). Offline test suite (127 checks,
 no Odoo/API key/network): [`tests/test_watch.py`](../tests/test_watch.py).
 
 ---

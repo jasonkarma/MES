@@ -75,6 +75,13 @@ The AI reply is itself a `mail.message` on the same `mrp.production` record, so 
    *not* survive the DB round-trip. The guard therefore cannot rely on a `data-*`
    attribute alone — the plain-text token and heading are the load-bearing signals, and
    the class/attribute check is a bonus for instances that do not sanitise.
+
+   ⚠️ **Guard 1 is not universal.** The author check assumes the human posting notes is a
+   *different* Odoo user than the one the bridge authenticates as. Odoo's usual setup is a
+   single shared admin account, in which case every real operator note looks
+   `self-authored` and nothing is ever triaged. `--allow-self-authored`
+   (`WATCH_SKIP_SELF_AUTHORED=false`) turns guard 1 off; guards 2 and 3 still prevent the
+   AI from triaging itself. Verified live in both configurations.
 3. **Cursor guard** — the reply id is written to the checkpoint as processed, so it is
    below the cursor on the next poll anyway.
 
@@ -281,7 +288,7 @@ Small refactors to the existing one-shot path (no behaviour change):
 
 ## 10. Test plan (new: `tests/test_watch.py`, offline — no Odoo, no API key)
 
-**Status: implemented and passing — 121 checks.**
+**Status: implemented and passing — 127 checks.**
 `python tests/test_watch.py` (no pytest, no network, no API key).
 
 1. `html_to_text`: tags, `<br>`, entities, script/style, `class="o_attachment"` wrappers,
@@ -322,7 +329,7 @@ Small refactors to the existing one-shot path (no behaviour change):
 
 1. `triage.py` — §8 sections added, `--watch` wired, three small refactors applied.
 2. `.env.example` — six `WATCH_*` keys with comments.
-3. `tests/test_watch.py` — new offline test module (§10), 121 checks passing.
+3. `tests/test_watch.py` — new offline test module (§10), 127 checks passing.
 4. `README.md` — "Continuous watch mode" subsection, `mail.message` model row,
    troubleshooting entries (lock file, self-authored skip, state reset).
 5. `requirements.txt` — **no new dependencies**; a comment documents that `fcntl` is POSIX-only.

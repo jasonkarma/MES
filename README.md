@@ -326,7 +326,7 @@ Each test:
 python tests/test_watch.py
 ```
 
-121 checks covering HTML stripping, duplicate/AI-marker guards, the durable checkpoint,
+127 checks covering HTML stripping, duplicate/AI-marker guards, the durable checkpoint,
 retry vs. dead-letter behaviour and exactly-once triage across a restart. **No Odoo
 instance, no OpenAI key and no network access required** — the XML-RPC bridge and the LLM
 client are replaced with fakes.
@@ -507,16 +507,24 @@ checkpoint and exits 0.
 | `--max-iterations N` | – | Stop after N polls (testing/demos) |
 | `--on-error {skip,halt}` | `skip` | Poison-message policy |
 | `--message-types A,B` | `comment,email` | Which `mail.message.message_type` values count as operator input |
+| `--allow-self-authored` | off | Also triage notes written by the same Odoo user we log in as (single-admin setups). Our own AI replies are still ignored via the marker |
+| `--skip-self-authored` | on | Explicitly force the default: ignore notes authored by our own user |
 | `--dry-run` | off | Log the reply instead of posting it; inspected notes are **not** consumed, so a later real run triages them |
 
 Equivalent `.env` keys: `WATCH_INTERVAL`, `WATCH_BATCH_SIZE`, `WATCH_STATE_FILE`,
-`WATCH_FAILURES_FILE`, `WATCH_ON_ERROR`, `WATCH_MESSAGE_TYPES` (CLI always wins).
+`WATCH_FAILURES_FILE`, `WATCH_ON_ERROR`, `WATCH_MESSAGE_TYPES`,
+`WATCH_SKIP_SELF_AUTHORED` (CLI always wins).
 
 ### Safeguards
 
 - **Single instance:** `logs/watch_state.json.lock` is held with `fcntl.flock`, so a second
   watcher exits with a clear message instead of double-posting. (POSIX only; on Windows the
   lock degrades to a logged no-op — the checkpoint guards still hold.)
+- **Self-authored notes are skipped by default.** Odoo's usual setup is one shared admin
+  account, so a human typing a note *is* the user the bridge logs in as. If that is your
+  setup, pass `--allow-self-authored` (or set `WATCH_SKIP_SELF_AUTHORED=false`); the AI-marker
+  guard still prevents the watcher from triaging its own replies. The guard's skip reason is
+  logged as `self-authored`.
 - **Poison messages:** one un-processable note cannot block the queue forever. It is
   dead-lettered with the error, the message id, the MO id and a note excerpt, and the cursor
   moves past it.
@@ -526,7 +534,7 @@ Equivalent `.env` keys: `WATCH_INTERVAL`, `WATCH_BATCH_SIZE`, `WATCH_STATE_FILE`
 ### Testing
 
 ```bash
-python tests/test_watch.py      # 121 offline checks: no Odoo, no API key, no network
+python tests/test_watch.py      # 127 offline checks: no Odoo, no API key, no network
 ```
 
 Full design, trade-offs and the live-Odoo verification log:
@@ -638,7 +646,10 @@ Full design, trade-offs and the live-Odoo verification log:
 ### Watch mode: an operator's note was never triaged
 1. Check the skip reasons in the watcher log (`-v` for detail). Common ones:
    - `self-authored` — the note was posted by the same Odoo user the watcher authenticates
-     as. Author the note as a different user/partner.
+     as. Either author the note as a different user/partner, or run with
+     `--allow-self-authored`.
+   - `notification` message type — Odoo state-change lines are intentionally ignored; only
+     `comment`/`email` notes count (see `--message-types`).
    - `duplicate-content` — the exact same text was already triaged on that MO.
    - `empty-note` — the note was attachment-only, blank, or shorter than 4 characters.
    - `ai-marker` — the body looks like an AI verdict.
@@ -698,7 +709,7 @@ This is a student assignment project for educational purposes.
 - ✅ Structured prompt iteration log
 - ✅ Complete documentation and setup instructions
 - ✅ Unattended continuous triage (`--watch`), exactly-once and crash-safe
-- ✅ 121 offline watch-mode tests, no Odoo/API key/network needed
+- ✅ 127 offline watch-mode tests, no Odoo/API key/network needed
 
 **Expected Grade Impact:**
 - Reduces triage latency by 99.99%

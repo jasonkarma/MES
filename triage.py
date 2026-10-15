@@ -160,6 +160,14 @@ DEFAULT_FAILURES_FILE = "logs/triage_watch_failures.jsonl"
 DEFAULT_ON_ERROR = "skip"            # skip | halt   (poison-message policy)
 DEFAULT_MESSAGE_TYPES = ("comment", "email")
 
+# Skip Chatter notes authored by the *same partner we authenticate as*.
+# Default True: our own replies are authored by us, and ignoring them by author
+# is free. Odoo's usual single-admin setup breaks this assumption (a human
+# typing in the Chatter IS that user), so --allow-self-authored disables it —
+# the AI-marker guard still prevents an AI-triaging-AI loop, this is only the
+# belt-and-braces layer.
+DEFAULT_SKIP_SELF_AUTHORED = True
+
 DEDUPE_RING_SIZE = 200               # ids + content hashes kept in the checkpoint
 MIN_NOTE_CHARS = 4                   # shorter than this = attachment/emoji-only note
 MAX_NOTE_CHARS = 1500                # prompt-cost cap on the stripped note
@@ -207,6 +215,10 @@ def load_settings() -> dict[str, str]:
         "watch_state_file": os.getenv("WATCH_STATE_FILE", DEFAULT_STATE_FILE),
         "watch_failures_file": os.getenv("WATCH_FAILURES_FILE", DEFAULT_FAILURES_FILE),
         "watch_on_error": os.getenv("WATCH_ON_ERROR", DEFAULT_ON_ERROR),
+        "watch_skip_self_authored": os.getenv(
+            "WATCH_SKIP_SELF_AUTHORED",
+            "true" if DEFAULT_SKIP_SELF_AUTHORED else "false",
+        ),
         "watch_message_types": os.getenv(
             "WATCH_MESSAGE_TYPES", ",".join(DEFAULT_MESSAGE_TYPES)
         ),
@@ -912,6 +924,7 @@ class Watcher:
         failures_file: str = DEFAULT_FAILURES_FILE,
         on_error: str = DEFAULT_ON_ERROR,
         message_types: Iterable[str] = DEFAULT_MESSAGE_TYPES,
+        skip_self_authored: bool = DEFAULT_SKIP_SELF_AUTHORED,
         dry_run: bool = False,
         since_id: int | None = None,
         backfill: int | None = None,
@@ -928,6 +941,7 @@ class Watcher:
         self.failures_file = Path(failures_file)
         self.on_error = on_error
         self.message_types = tuple(message_types) or DEFAULT_MESSAGE_TYPES
+        self.skip_self_authored = skip_self_authored
         self.dry_run = dry_run
         self.since_id = since_id
         self.backfill = backfill
@@ -935,16 +949,24 @@ class Watcher:
 
         self.state, self.state_existed = WatchState.load(state_file)
         self._partner_id: int | None = None
+        self._warned_self_authored = False
         self._stop = threading.Event()
         self._dry_run_seen: set[int] = set()
         self._polls = 0
         self._last_work = time.monotonic()
 
         log.info(
-            "Watch config: interval=%.1fs batch=%d types=%s on_error=%s state=%s",
+            "Watch config: interval=%.1fs batch=%d types=%s on_error=%s "
+            "skip_self_authored=%s state=%s",
             self.interval, self.batch_size, ",".join(self.message_types),
-            self.on_error, state_file,
+            self.on_error, self.skip_self_authored, state_file,
         )
+        if not self.skip_self_authored:
+            log.warning(
+                "--allow-self-authored is ON: notes written by this same Odoo user "
+                "WILL be triaged. Our own replies are still ignored via the "
+                "'%s' marker.", AI_TRIAGE_TOKEN,
+            )
 
     # --- bootstrap -----------------------------------------------------------
 
@@ -993,8 +1015,17 @@ class Watcher:
         Ordered cheapest -> most expensive, and every guard runs *before* any
         LLM call, so a self-inflicted message can never cost money.
         """
-        if self._partner_id is not None and msg.get("author_id"):
+        if self.skip_self_authored and self._partner_id is not None and msg.get("author_id"):
             if msg["author_id"][0] == self._partner_id:
+                # Explain the most common surprise exactly once per process.
+                if not self._warned_self_authored:
+                    self._warned_self_authored = True
+                    log.warning(
+                        "Skipping note id=%s because it was written by the same Odoo "
+                        "user we authenticate as (partner id=%s). If a human posts "
+                        "notes as this user, re-run with --allow-self-authored.",
+                        msg["id"], self._partner_id,
+                    )
                 return "self-authored"
 
         if is_ai_message(msg.get("body") or ""):
@@ -1311,6 +1342,13 @@ def build_parser() -> argparse.ArgumentParser:
                             "'halt' stops the watcher so you can debug it")
     watch.add_argument("--message-types", default=None,
                        help="comma-separated mail.message.message_type allow-list")
+    watch.add_argument("--allow-self-authored", action="store_true", default=None,
+                       help="also triage notes written by the same Odoo user we log in "
+                            "as (single-admin setups); our own AI replies are still "
+                            "ignored via the HTML marker")
+    watch.add_argument("--skip-self-authored", dest="allow_self_authored",
+                       action="store_false",
+                       help="force the default: ignore notes authored by our own user")
     return parser
 
 
@@ -1332,6 +1370,12 @@ def run_watch(args: argparse.Namespace, settings: dict[str, str],
     failures_file = args.failures_file or settings["watch_failures_file"]
     on_error = args.on_error or settings["watch_on_error"]
     message_types = _parse_message_types(args.message_types or settings["watch_message_types"])
+    if args.allow_self_authored is None:
+        skip_self_authored = settings["watch_skip_self_authored"].strip().lower() not in (
+            "0", "false", "no", "off",
+        )
+    else:
+        skip_self_authored = not args.allow_self_authored
 
     lock_path = Path(state_file).with_suffix(Path(state_file).suffix + ".lock")
 
@@ -1343,6 +1387,7 @@ def run_watch(args: argparse.Namespace, settings: dict[str, str],
         failures_file=failures_file,
         on_error=on_error,
         message_types=message_types,
+        skip_self_authored=skip_self_authored,
         dry_run=args.dry_run,
         since_id=args.since_id,
         backfill=args.backfill,
